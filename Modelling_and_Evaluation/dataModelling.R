@@ -1,0 +1,353 @@
+<<<<<<< HEAD
+setwd("~/Development/DataScienceAcademy/FCD/BigDataRAzure/ProjetoFinal/Grupo-Bimbo-Inventory-Demand/EDA")
+getwd()
+
+## Libraries
+library(data.table)
+library(dplyr)
+library(caTools)
+library(caret)
+library(rpart)
+library(caret)
+library(ROCR,pROC,PRROC)
+library(pROC)
+library(PRROC)
+library(xgboost)
+
+##### Stage 0 - Loading Dataset
+train_orig <- fread(file.choose(), header=T) #train <- fread("Datasets/train.csv", header=T)
+gc()
+## Creating a random sample
+set.seed(123);
+train_sample =  train_orig[sample(nrow(train_orig), size=1000000), ]
+rm(train_orig)
+dim(train_sample)
+
+##### Stage 1 - Feature engineering
+df <- train_sample %>%
+  group_by(Semana, Agencia_ID, Canal_ID, Ruta_SAK, Cliente_ID, Producto_ID, Demanda_uni_equil) %>%
+  summarise(WeekSales_unit = sum(Venta_uni_hoy),
+            WeekSales_Pesos = sum(Venta_hoy),
+            ReturnNextWeek_unit = sum(Dev_uni_proxima),
+            ReturnNextWeek_Pesos = sum(Dev_proxima)) %>%
+  mutate(Avg_Venda = WeekSales_Pesos / WeekSales_unit,
+         Taxa_Ret = ReturnNextWeek_unit / (WeekSales_unit+ReturnNextWeek_unit)) %>%
+  filter(!is.nan(Avg_Venda))
+dim(df)
+# 4085 rows are deleted because they have Avg_Venda == 0, remaining 995915
+
+# as we saw in the correlation analysis at EDA, the "WeekSales_unit" variable will overfit the model; so let's delete it
+df$WeekSales_unit <- NULL
+
+# as we also saw in EAD that at the Demanda_uni_equil column, 96% of the data have 26 as mean;
+# so let's exclude Demanda_uni_equil bigger than 26
+df <- df[-which(df$Demanda_uni_equil > 26),]
+dim(df) # 42107 rows were removed
+
+# converting columns that are factor
+df$Semana <- as.factor(df$Semana)
+df$Canal_ID <- as.factor(df$Canal_ID)
+glimpse(df)
+
+# normalize function
+scale.features <- function(df, variables){
+  for (variable in variables){
+    df[[variable]] <- scale(df[[variable]], center=T, scale=T)
+  }
+  return(df)
+}
+?scale
+# variables that will be normalized
+numeric.vars <- c('Demanda_uni_equil','WeekSales_Pesos','ReturnNextWeek_unit',
+                  'ReturnNextWeek_Pesos','Avg_Venda','Taxa_Ret')
+df <- scale.features(df, numeric.vars)
+# str(df, max.level=2)
+glimpse(df)
+# see the first 5 rows from variables normalized
+head(df[, 7:12], 5)
+
+# Removing functions
+rm('scale.features')
+rm('numeric.vars')
+
+
+##### Stage 2: Splitting into train and test datasets
+set.seed(123)
+sample = sample.split(df$Demanda_uni_equil, SplitRatio = .75)
+train = subset(df, sample == TRUE)
+test  = subset(df, sample == FALSE)
+# dim(train)
+# dim(test)
+gc()
+
+
+##### Stage 3: Creating the Models
+### Model 1: Linear Regression 
+controlModel <- trainControl(method="cv", number=5)
+set.seed(12345)
+model_LR <- train(Demanda_uni_equil ~ ., data = train, 
+                  method = "lm", metric="RMSE", 
+                  trControl=controlModel)
+summary(model_LR)
+pred_LR <- predict(model_LR, test)
+rmse_LR <- RMSE(pred_LR, test$Demanda_uni_equil)
+r2_LR <- R2(pred_LR, test$Demanda_uni_equil)
+scores_LR <- data.frame(actual = test$Demanda_uni_equil,prediction = pred_LR)
+
+### Model 2: Decision Tree (rpart-anova)
+set.seed(12345)
+model_anova <- rpart(Demanda_uni_equil ~ ., train, method = 'anova')
+pred_anova <- predict(model_anova, test)
+rmse_anova <- RMSE(pred_anova, test$Demanda_uni_equil)
+r2_anova <- R2(pred_anova, test$Demanda_uni_equil)
+scores_anova <- data.frame(actual = test$Demanda_uni_equil,prediction = pred_anova)
+
+# Model 3: eXtreme Gradient Boosting (XGBoost)
+xgb_train <- xgb.DMatrix(data = data.matrix(select(train, -Demanda_uni_equil)),
+                         label = train$Demanda_uni_equil)
+xgb_test <- xgb.DMatrix(data = data.matrix(select(test, -Demanda_uni_equil)),
+                        label = test$Demanda_uni_equil)
+set.seed(12345)
+model_XGB <- xgboost(data=xgb_train, max.depth=3, nrounds=100)
+pred_XGB <- predict(model_XGB, xgb_test)
+rmse_XGB <- RMSE(pred_XGB, test$Demanda_uni_equil)
+r2_XGB <- R2(pred_XGB, test$Demanda_uni_equil)
+scores_XGB <- data.frame(actual = test$Demanda_uni_equil,prediction = pred_XGB)
+
+# ### Model X: Random Forest 
+# set.seed(12345)
+# model_RF <- train(Demanda_uni_equil ~ ., data = train, 
+#                     method = "rf", metric="RMSE")
+# pred_RF <- predict(model_RF, test)
+# rmse_RF <- RMSE(pred_RF, test$Demanda_uni_equil)
+# r2_RF <- R2(pred_RF, test$Demanda_uni_equil)
+# # Memory insuficient to execute this model
+
+###### Comparing the Models
+## graph models LM
+ggplotRegression <- function (fit, color, tittle_, rmse_) {
+
+  ggplot(fit$model, aes_string(x = names(fit$model)[2], y = names(fit$model)[1])) + 
+    geom_point() +
+    stat_smooth(method = "lm", col = color) +
+    labs(title = paste(tittle_),
+         subtitle =paste(
+                       "Adj R2 = ",signif(summary(fit)$adj.r.squared, 4),
+                       " Intercept=",signif(fit$coef[[1]],4 ),
+                       " Slope=",signif(fit$coef[[2]], 4),
+                       " RMSE=",signif(rmse_, 4)))+
+    theme_bw()
+}
+
+fit_LR <- lm(prediction ~ actual, data = scores_LR)
+fit_anova <- lm(prediction ~ actual, data = scores_anova)
+fit_XGB <- lm(prediction ~ actual, data = scores_XGB)
+ggplotRegression(fit_LR, 5, "Linear Regression Model: ", rmse_LR)
+ggplotRegression(fit_anova, 6, "Decision Tree (anova): ", rmse_anova)
+ggplotRegression(fit_XGB, 7, "XGBoost: ", rmse_XGB)
+
+## Comparison of R² and RMSE 
+summaryModels <- data.frame(Model = c('Linear Regression','Rpart(anova)','XGBoost'),
+                     RMSE = c(rmse_LR,rmse_anova,rmse_XGB),
+                     R2 = c(r2_LR, r2_anova, r2_XGB))
+
+ggplot(summaryModels) +
+  geom_bar(stat = 'identity', fill = '#8CD17D') +
+  aes(x = Model, y = R2) +
+  geom_text(aes(Model, R2, label = round(R2,4), fill = NULL,  vjust = 1.3)) +
+  ggtitle("Comparison of the R² of each model")+
+  theme_bw()
+
+ggplot(summaryModels) +
+  geom_bar(stat = 'identity', fill = '#E15759') +
+  aes(x = Model, y = RMSE) +
+  geom_text(aes(Model, RMSE, label = round(RMSE,6), fill = NULL,  vjust = 1.3)) +
+  ggtitle("Comparison of the RMSE of each model") +
+  theme_bw()
+
+# so, the best Model was XGBoost
+=======
+setwd("~/Development/DataScienceAcademy/FCD/BigDataRAzure/ProjetoFinal/Grupo-Bimbo-Inventory-Demand/Modelling_and_Evaluation")
+getwd()
+
+# gc() function - is used for free ram memory. In the code below there are many strategic rows for this purpose;
+
+## Libraries
+library(data.table)
+library(dplyr)
+library(caret)
+library(xgboost)
+
+# 1. Loading Dataset
+# 1.1 Loading 'train' dataset:
+train <- fread("../Datasets/train.csv", header=T)
+#train <- fread("../Datasets/train_sample.csv", header=T)
+# # Sets a seed to allow the same experiment result to be reproducible:
+# set.seed(123);
+# # as the dataset is very large, let's get a random sample of it
+# train =  train[sample(nrow(train), size=1000000), ]
+
+# 1.2 Loading 'test' dataset:
+test <- fread("/home/matheus/Development/DataScienceAcademy/FCD/BigDataRAzure/ProjetoFinal/Projeto2/Datasets/test.csv", header=T)
+
+# 2. Predictive Analytics
+## 2.1 Feature Selection
+names(test)
+
+# Since the variables Venta_uni_hoy, Venta_hoy, Dev_uni_proxima and Dev_proxima are not present in the test dataset and we won use them for transformation, so we will exclude them from the training dataset.
+train <- train %>% select(Semana, Agencia_ID, Canal_ID, Ruta_SAK, Cliente_ID, Producto_ID, Demanda_uni_equil)
+#train_orig <- train_orig %>% select(Semana, Agencia_ID, Canal_ID, Ruta_SAK, Cliente_ID, Producto_ID, Demanda_uni_equil)
+
+
+## 2.2 1st Feature Engineering - transforming the target variable
+# Do you remember in EDA that there is a distortion in the data distribution of the variable Demand_uni_equil? 
+train %>%
+  ggplot(aes(x = Demanda_uni_equil)) + 
+  geom_density(fill = '#A6EBC9') + 
+  theme_bw() + 
+  labs(title = 'Density graph for variable: Demanda uni equil') +
+  xlab('Demanda uni equil')
+# So, that's a problem for data modelling.
+
+#To reduce irregularity in the data and make the patterns of this variable more visible we will use the log1p (or log(x + 1)) transformation function. And further on, we will also use the function expm1 (or exp(x) - 1) to carry out the inverse process of this transforming.
+
+# Calculates the natural logarithm of each value of the variable Demand_uni_equil + 1 unit, that is, log(Demand_uni_equil + 1):
+train$Demanda_uni_equil <- log1p(train$Demanda_uni_equil)
+#For more information on how the log function acts on skewed data see this [link](https://onlinestatbook.com/2/transformations/log.html). To better understand the functions log1p and expm1 see this [link](https://www.johndcook.com/blog/2010/06/07/math-library-functions-that-seem-unnecessary/).
+
+#We emphasize that the main reason for using the log1p function is that there are null values within the variable data, which makes the use of the log function unfeasible because the [log(0) is an undefined value](https://www.rapidtables.com/math/algebra/logarithm/Logarithm_of_0.html).
+
+# Checking for null values for the variable Demanda_uni_equil:
+prop.table(table(train$Demanda_uni_equil == 0))
+# We find that approximately 1.8% of the data for the variable to be predicted is equal to 0. That's why we applied log1p function to the dataset.
+
+# Visualize the effect of the transformation (log1p) applied on the data:
+train %>%
+  ggplot(aes(x = Demanda_uni_equil)) + 
+  geom_density(fill = '#A6EBC9') + 
+  theme_bw() + 
+  labs(title = 'Density graph for variable: Demanda uni equil') +
+  xlab('log(Demanda uni equil + 1)')
+
+#We conclude that applying the log1p function decreased the distortion caused by outliers within the dataset of the variable to be predicted and this will help us to achieve better accuracy values in the models we create.
+
+## 2.3 Joining training and testing data in the same dataset
+#Our goal in this step is to create a single dataset containing both training data and test data. But, before we perform this action, we should note that there are exclusive variables for each of these datasets.
+
+# The test dataset has the variables 'id' and 'Demand_uni_equil' that are not contained in the training data and so we will create them for this dataset:
+train$id <- 0
+train$toTest <- 0
+
+# To distinguish the records that belong to the training dataset from those that belong to the test data, we will create a binary variable named toTest (0: training data; 1:test data):
+test$Demanda_uni_equil <- 0
+test$toTest <- 1  
+
+# for the records of last week, ninth, let's merge them with the record of the test dataset:
+data <- rbind(train[Semana == 9], test)
+# these data are now in the 'data' object joined with ninth week of training dataset, or this reason we remove it:
+rm(test)
+
+gc()
+
+## 2.4 2nd Feature Engineering - creating new predictor variables
+# Training data records that were not manipulated will be used in this step:
+train <- train[Semana <= 8]
+gc()
+# Do you remember the correlation stage at EDA? So, now we will create for the model those variables that were better on correlation:
+demand_mean_PC <- train %>%
+  group_by(Producto_ID, Cliente_ID) %>%
+  summarise_at(vars(Demanda_uni_equil),
+               list(Mean_byPC = mean))
+data <- merge(x=data,y=demand_mean_PC,by=c("Producto_ID","Cliente_ID"), all.x = TRUE)
+gc()
+
+demand_mean_ACR <- train %>%
+  group_by(Agencia_ID, Canal_ID, Ruta_SAK) %>%
+  summarise_at(vars(Demanda_uni_equil),
+               list(Mean_byACR = mean))
+data <- merge(x=data,y=demand_mean_ACR,by=c("Agencia_ID", "Canal_ID", "Ruta_SAK"), all.x = TRUE)
+
+demand_mean_prod <- train %>%  
+  group_by(Producto_ID) %>%                         
+  summarise_at(vars(Demanda_uni_equil),              
+               list(Mean_byProd = mean))
+data <- merge(x=data,y=demand_mean_prod,by=c("Producto_ID"), all.x = TRUE)
+
+demand_mean_client <- train %>%  
+  group_by(Cliente_ID) %>%                         
+  summarise_at(vars(Demanda_uni_equil),              
+               list(Mean_byClient = mean))
+data <- merge(x=data,y=demand_mean_client,by=c("Cliente_ID"), all.x = TRUE)
+
+
+# let's look how the data are:
+head(data)
+# Note that as we started to evaluate the average values and quantities of each variable by grouping,  the problem of the existence of products within the test data that are not present within the training data has been eliminated.
+
+# removing no longer needed variables:
+rm(demand_mean_PC, demand_mean_ACR, demand_mean_prod, demand_mean_client, train)
+
+
+## 2.5 3rd Feature Engineering - transforming predictor variables
+#In this step we will scale the values of the predictor variables between 0 and 1.
+gc()
+# Defining preprocessing method:
+params <- preProcess(data[, !c('id', 'Demanda_uni_equil', 'toTest')], method = 'range')
+#  "range" method scales the data to be within rangeBounds. If new samples have values larger or smaller than those in the training set, values will be outside of this range.
+gc()
+
+# Transforming the data:
+data <- predict(params, data)
+
+# Let's see how the data turned out:
+head(data)
+
+## 2.6 Segmenting training and testing data
+# Obtaining train record:
+train <- data %>% 
+  filter(toTest == 0) %>%
+  select(-c(id, toTest))
+
+# Obtaining test record:
+test <- data %>% 
+  filter(toTest == 1) %>%
+  select(-c(Demanda_uni_equil, toTest))
+
+# 
+rm(data)
+gc()
+
+## 2.7 Creating XGboost Model
+#We chose XGboost algorithm to create our predictive model because it has a good performance to generate the scores of the evaluation metric to be used and because it is considerably faster when compared to other algorithms.
+# The XGboost algorithm has the ability to handle NA values and so we will not transform the data to handle these apparitions.
+
+# Converting the data for  DMatrix type (a dense matrix):
+xgb_train <- xgb.DMatrix(data = data.matrix(select(train, -Demanda_uni_equil)), # predictor variables.
+                         label = train$Demanda_uni_equil)                       # variable to be predicted.
+
+# Sets a seed to allow the same experiment result to be reproducible:
+set.seed(12345)
+
+# Creating the model based on the XGboost algorithm:
+model_XGB <- xgboost(data=xgb_train, max.depth=15, nrounds=50)
+# Performing prediction with the model based on the XGboost algorithm:
+pred <- predict(model_XGB, as.matrix(test %>% select(- id)))
+
+
+# Converting the predicted results to the original scale of the target variable (exp(Demand_uni_equil) - 1):
+pred <- expm1(pred)
+
+# Turning any negative prediction into a null value:
+pred[pred < 0] <- 0
+
+
+# Saving the generated results to a CSV file:
+d <- data.frame(id = as.integer(test$id), Demanda_uni_equil = pred)
+fwrite(d, "complete_train_submit.csv")
+
+gc()
+
+## Kaggle result: 
+# - Public Score: 0.45800;
+# - Private Score: 0.47638;
+>>>>>>> 10th commit: Adjusts made; adding code 1.0 in html
