@@ -29,11 +29,12 @@ In summary, the goal is to build a machine learning model to forecast the demand
 
 1. Datasets: 
 
-   - train.csv — the training set (it is found at [problem's page on Kaggle](https://www.kaggle.com/c/grupo-bimbo-inventory-demand/data).)
-   - test.csv — the test set (it is found at [problem's page on Kaggle](https://www.kaggle.com/c/grupo-bimbo-inventory-demand/data).)
-   - cliente_tabla.csv — client names (can be joined with train/test on Cliente_ID)
-   - producto_tabla.csv — product names (can be joined with train/test on Producto_ID)
-   - town_state.csv — town and state (can be joined with train/test on Agencia_ID)
+   - train.csv — the training set (it is found at [problem's page on Kaggle](https://www.kaggle.com/c/grupo-bimbo-inventory-demand/data));
+   - test.csv — the test set (it is found at [problem's page on Kaggle](https://www.kaggle.com/c/grupo-bimbo-inventory-demand/data));
+   - cliente_tabla.csv — client names (can be joined with train/test on Cliente_ID);
+   - producto_tabla.csv — product names (can be joined with train/test on Producto_ID);
+   - town_state.csv — town and state (can be joined with train/test on Agencia_ID);
+   - train_sample — a sample from train.csv with 1kk records and set.seed = 123.
 2. EDA: it contains the 'ExploratoryDataAnalysis', in which we investigate the dataset in order to know it, generating plots and correlations.
 3. Modelling_and_Evaluation: it contains how the model was build, its transformation, algorithm ML and metrics on Kaggle.
 

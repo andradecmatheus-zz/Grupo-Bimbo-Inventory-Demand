@@ -207,6 +207,12 @@ library(dplyr)</code></pre>
 <pre><code>## The following object is masked from &#39;package:dplyr&#39;:
 ## 
 ##     slice</code></pre>
+<pre class="r"><code>library(Metrics) #rmsle function</code></pre>
+<pre><code>## 
+## Attaching package: &#39;Metrics&#39;</code></pre>
+<pre><code>## The following objects are masked from &#39;package:caret&#39;:
+## 
+##     precision, recall</code></pre>
 <p><br />
 </p>
 </div>
@@ -214,7 +220,7 @@ library(dplyr)</code></pre>
 <h2>1.0 Loading Datasets</h2>
 <pre class="r"><code># 1.1 Loading &#39;train&#39; dataset:
 train &lt;- fread(&quot;../Datasets/train.csv&quot;, header=T)
-# train &lt;- fread(&quot;../Datasets/train_sample.csv&quot;, header=T)
+#train &lt;- fread(&quot;../Datasets/train_sample.csv&quot;, header=T)
 # train_orig &lt;- fread(&quot;../Datasets/train.csv&quot;, header=T)
 # 
 # # Checking the quantity of records in dataset:
@@ -408,9 +414,95 @@ rm(data)</code></pre>
 <div id="creating-xgboost-model" class="section level3">
 <h3>2.7 Creating XGboost Model</h3>
 <p>We chose XGboost algorithm to create our predictive model because it has a good performance to generate the scores of the evaluation metric to be used and because it is considerably faster when compared to other algorithms.</p>
-<pre class="r"><code># The XGboost algorithm has the ability to handle NA values and so we will not transform the data to handle these apparitions.
+<pre class="r"><code># Function to find the best parameters for XGboost algorithm. It generates various models and compares them.
+getBetterXGboostParameters &lt;- function(data, label, maxDepth = 10, nRounds = 100) {
+  
+  # Creating a dataframe to save model results.
+  featuresXGboost &lt;- data.frame()
+  
+  # auxiliary variable to monitoring the progress in the evaluation of the created models.
+  count &lt;- 0
+  
+  # it defines the total number of models to be created.
+  total &lt;- length(maxDepth) * length(nRounds)
+  
+  # Converting dataset variable data to DMatrix type (a dense matrix).
+  dTrain &lt;- xgb.DMatrix(
+    data  = data,      # predictor variables
+    label = label      # variable to be predicted.
+  )
+  
+  # Specify the learning task and the corresponding learning objective (regression with squared log loss):
+  obj = &quot;reg:squaredlogerror&quot;
+  
+  for(m in maxDepth) {
+    for(r in nRounds) {
+      # Sets a seed to allow the same experiment result to be reproducible:
+      set.seed(12345)
+      
+      # Creating the model based on the XGboost algorithm:
+      model_xgb &lt;- xgb.train(
+        data      = dTrain,   # defines the predictor variables and the variable to be predicted.
+        objective = obj,      # regression with squared log loss as learning task
+        max.depth = m,        # it defines the maximum size of the tree.
+        nrounds   = r,        # it controls the maximum number of iterations.
+      )
+      
+      # Performing prediction with the model based on the XGboost algorithm:
+      pred &lt;- predict(model_xgb, data)
+      pred[pred &lt; 0] &lt;- 0
+      
+      # It stores in a dataframe the parameters used to create the models and their RMSLE metric score obtained:
+      featuresXGboost &lt;- rbind(featuresXGboost, data.frame(
+        maxDepth = m, 
+        nRounds  = r,
+        rmsle    = rmsle(label, pred))
+      )
+      
+      # Increases the number of evaluated models.
+      count &lt;- count + 1 
+      
+      # Print the results during evaluation
+      print(paste(100 * count / total, &#39;%, best rmsle: &#39;, min(featuresXGboost$rmsle)))
+    }
+  }
+  
+  # Returns the dataframe with the results obtained from each model
+  featuresXGboost
+  
+} # End getBetterXGboostParameters Function</code></pre>
+<p>The XGboost algorithm has the ability to handle NA values and so we will not transform the data to handle these apparitions. Then, we can create the model now.</p>
+<pre class="r"><code># Generating different models based on the XGboost algorithm and determining their scores for each RMSLE metric.
+featuresXGboost &lt;- getBetterXGboostParameters(
+  data        = as.matrix(train %&gt;% select(- Demanda_uni_equil)), 
+  label       = train$Demanda_uni_equil, 
+  maxDepth    = 13:14, 
+  nRounds     = 86:87
+)</code></pre>
+<pre><code>## [1] &quot;25 %, best rmsle:  0.187554114763534&quot;
+## [1] &quot;50 %, best rmsle:  0.187554069084898&quot;
+## [1] &quot;75 %, best rmsle:  0.176710920818369&quot;
+## [1] &quot;100 %, best rmsle:  0.176640239313067&quot;</code></pre>
+<pre class="r"><code># It returns the dataframe with the results obtained from each model:
+featuresXGboost</code></pre>
+<pre><code>##   maxDepth nRounds     rmsle
+## 1       13      86 0.1875541
+## 2       13      87 0.1875541
+## 3       14      86 0.1767109
+## 4       14      87 0.1766402</code></pre>
+<pre class="r"><code># The best model in this case is:
+featuresXGboost[which.min(featuresXGboost$rmsle), ] #head(sort(featuresXGboost$rmsle, decreasing = F), 1)</code></pre>
+<pre><code>##   maxDepth nRounds     rmsle
+## 4       14      87 0.1766402</code></pre>
+<pre class="r"><code># so, it seems that the best model is in the 4th row;
 
-# Converting the data for  DMatrix type (a dense matrix):
+# However, after using each of the above settings on kaggle, it was observed that the best result is in 2nd row.
+featuresXGboost[2, ]</code></pre>
+<pre><code>##   maxDepth nRounds     rmsle
+## 2       13      87 0.1875541</code></pre>
+<pre class="r"><code>bestXGboost &lt;- featuresXGboost[2, ]</code></pre>
+<p>Therefore, the best model is the 2nd row, since models registered after this row show lower performances because they begin overfitting.</p>
+<pre class="r"><code># Converting the data for  DMatrix type (a dense matrix):
 xgb_train &lt;- xgb.DMatrix(data = data.matrix(select(train, -Demanda_uni_equil)), # predictor variables.
                          label = train$Demanda_uni_equil)                       # variable to be predicted.
 
@@ -418,109 +510,100 @@ xgb_train &lt;- xgb.DMatrix(data = data.matrix(select(train, -Demanda_uni_equil)
 set.seed(12345)
 
 # Creating the model based on the XGboost algorithm:
-model_XGB &lt;- xgboost(data=xgb_train, max.depth=12, nrounds=100)</code></pre>
-<pre><code>## [1]  train-rmse:1.020892 
-## [2]  train-rmse:0.787735 
-## [3]  train-rmse:0.642446 
-## [4]  train-rmse:0.557031 
-## [5]  train-rmse:0.509228 
-## [6]  train-rmse:0.483618 
-## [7]  train-rmse:0.470060 
-## [8]  train-rmse:0.462794 
-## [9]  train-rmse:0.458649 
-## [10] train-rmse:0.456331 
-## [11] train-rmse:0.454663 
-## [12] train-rmse:0.453541 
-## [13] train-rmse:0.452566 
-## [14] train-rmse:0.451753 
-## [15] train-rmse:0.450880 
-## [16] train-rmse:0.450191 
-## [17] train-rmse:0.449584 
-## [18] train-rmse:0.449055 
-## [19] train-rmse:0.448493 
-## [20] train-rmse:0.448096 
-## [21] train-rmse:0.447694 
-## [22] train-rmse:0.447448 
-## [23] train-rmse:0.447025 
-## [24] train-rmse:0.446698 
-## [25] train-rmse:0.446308 
-## [26] train-rmse:0.445914 
-## [27] train-rmse:0.445418 
-## [28] train-rmse:0.445007 
-## [29] train-rmse:0.444773 
-## [30] train-rmse:0.444468 
-## [31] train-rmse:0.444233 
-## [32] train-rmse:0.444001 
-## [33] train-rmse:0.443732 
-## [34] train-rmse:0.443491 
-## [35] train-rmse:0.443303 
-## [36] train-rmse:0.443063 
-## [37] train-rmse:0.442811 
-## [38] train-rmse:0.442508 
-## [39] train-rmse:0.442317 
-## [40] train-rmse:0.441987 
-## [41] train-rmse:0.441714 
-## [42] train-rmse:0.441422 
-## [43] train-rmse:0.441195 
-## [44] train-rmse:0.440883 
-## [45] train-rmse:0.440734 
-## [46] train-rmse:0.440509 
-## [47] train-rmse:0.440347 
-## [48] train-rmse:0.440073 
-## [49] train-rmse:0.439863 
-## [50] train-rmse:0.439661 
-## [51] train-rmse:0.439330 
-## [52] train-rmse:0.438972 
-## [53] train-rmse:0.438681 
-## [54] train-rmse:0.438546 
-## [55] train-rmse:0.438272 
-## [56] train-rmse:0.438075 
-## [57] train-rmse:0.437877 
-## [58] train-rmse:0.437697 
-## [59] train-rmse:0.437542 
-## [60] train-rmse:0.437279 
-## [61] train-rmse:0.437109 
-## [62] train-rmse:0.436976 
-## [63] train-rmse:0.436730 
-## [64] train-rmse:0.436459 
-## [65] train-rmse:0.436273 
-## [66] train-rmse:0.435997 
-## [67] train-rmse:0.435829 
-## [68] train-rmse:0.435574 
-## [69] train-rmse:0.435412 
-## [70] train-rmse:0.435216 
-## [71] train-rmse:0.434996 
-## [72] train-rmse:0.434822 
-## [73] train-rmse:0.434654 
-## [74] train-rmse:0.434475 
-## [75] train-rmse:0.434333 
-## [76] train-rmse:0.434099 
-## [77] train-rmse:0.433892 
-## [78] train-rmse:0.433707 
-## [79] train-rmse:0.433484 
-## [80] train-rmse:0.433287 
-## [81] train-rmse:0.433131 
-## [82] train-rmse:0.432932 
-## [83] train-rmse:0.432727 
-## [84] train-rmse:0.432617 
-## [85] train-rmse:0.432519 
-## [86] train-rmse:0.432322 
-## [87] train-rmse:0.432154 
-## [88] train-rmse:0.431967 
-## [89] train-rmse:0.431842 
-## [90] train-rmse:0.431577 
-## [91] train-rmse:0.431357 
-## [92] train-rmse:0.431194 
-## [93] train-rmse:0.431049 
-## [94] train-rmse:0.430908 
-## [95] train-rmse:0.430700 
-## [96] train-rmse:0.430468 
-## [97] train-rmse:0.430216 
-## [98] train-rmse:0.430066 
-## [99] train-rmse:0.429884 
-## [100]    train-rmse:0.429702</code></pre>
+model_xgb &lt;- xgboost(
+  data      = xgb_train,             # it defines the predictor variables and the variable to be predicted.
+  max.depth = bestXGboost$maxDepth,  # it defines the maximum size of the tree.
+  nrounds   = bestXGboost$nRounds,   # it controls the maximum number of iterations.
+)</code></pre>
+<pre><code>## [1]  train-rmse:1.020439 
+## [2]  train-rmse:0.786665 
+## [3]  train-rmse:0.640947 
+## [4]  train-rmse:0.555029 
+## [5]  train-rmse:0.506793 
+## [6]  train-rmse:0.480801 
+## [7]  train-rmse:0.467023 
+## [8]  train-rmse:0.459389 
+## [9]  train-rmse:0.455203 
+## [10] train-rmse:0.452576 
+## [11] train-rmse:0.450855 
+## [12] train-rmse:0.449615 
+## [13] train-rmse:0.448588 
+## [14] train-rmse:0.447594 
+## [15] train-rmse:0.446692 
+## [16] train-rmse:0.445907 
+## [17] train-rmse:0.445111 
+## [18] train-rmse:0.444391 
+## [19] train-rmse:0.443667 
+## [20] train-rmse:0.443172 
+## [21] train-rmse:0.442728 
+## [22] train-rmse:0.442247 
+## [23] train-rmse:0.441780 
+## [24] train-rmse:0.441485 
+## [25] train-rmse:0.440885 
+## [26] train-rmse:0.440343 
+## [27] train-rmse:0.439923 
+## [28] train-rmse:0.439411 
+## [29] train-rmse:0.438993 
+## [30] train-rmse:0.438706 
+## [31] train-rmse:0.438287 
+## [32] train-rmse:0.437850 
+## [33] train-rmse:0.437439 
+## [34] train-rmse:0.437054 
+## [35] train-rmse:0.436673 
+## [36] train-rmse:0.436219 
+## [37] train-rmse:0.435958 
+## [38] train-rmse:0.435654 
+## [39] train-rmse:0.435406 
+## [40] train-rmse:0.435157 
+## [41] train-rmse:0.434813 
+## [42] train-rmse:0.434449 
+## [43] train-rmse:0.434159 
+## [44] train-rmse:0.433761 
+## [45] train-rmse:0.433398 
+## [46] train-rmse:0.433048 
+## [47] train-rmse:0.432684 
+## [48] train-rmse:0.432394 
+## [49] train-rmse:0.432041 
+## [50] train-rmse:0.431823 
+## [51] train-rmse:0.431647 
+## [52] train-rmse:0.431155 
+## [53] train-rmse:0.430904 
+## [54] train-rmse:0.430650 
+## [55] train-rmse:0.430433 
+## [56] train-rmse:0.430157 
+## [57] train-rmse:0.429840 
+## [58] train-rmse:0.429618 
+## [59] train-rmse:0.429334 
+## [60] train-rmse:0.429043 
+## [61] train-rmse:0.428685 
+## [62] train-rmse:0.428400 
+## [63] train-rmse:0.428177 
+## [64] train-rmse:0.427835 
+## [65] train-rmse:0.427602 
+## [66] train-rmse:0.427329 
+## [67] train-rmse:0.426998 
+## [68] train-rmse:0.426776 
+## [69] train-rmse:0.426613 
+## [70] train-rmse:0.426374 
+## [71] train-rmse:0.426162 
+## [72] train-rmse:0.425935 
+## [73] train-rmse:0.425688 
+## [74] train-rmse:0.425423 
+## [75] train-rmse:0.425118 
+## [76] train-rmse:0.424860 
+## [77] train-rmse:0.424674 
+## [78] train-rmse:0.424436 
+## [79] train-rmse:0.424261 
+## [80] train-rmse:0.423894 
+## [81] train-rmse:0.423637 
+## [82] train-rmse:0.423327 
+## [83] train-rmse:0.423149 
+## [84] train-rmse:0.422902 
+## [85] train-rmse:0.422704 
+## [86] train-rmse:0.422393 
+## [87] train-rmse:0.422089</code></pre>
 <pre class="r"><code># Performing prediction with the model based on the XGboost algorithm:
-pred &lt;- predict(model_XGB, as.matrix(test %&gt;% select(- id)))</code></pre>
+pred &lt;- predict(model_xgb, as.matrix(test %&gt;% select(- id)))</code></pre>
 <pre class="r"><code># Converting the predicted results to the original scale of the target variable (exp(Demand_uni_equil) - 1):
 pred &lt;- expm1(pred)
 
@@ -531,23 +614,22 @@ pred[pred &lt; 0] &lt;- 0
 d &lt;- data.frame(id = as.integer(test$id), Demanda_uni_equil = pred)
 fwrite(d, &quot;completeTrainDataset_submit.csv&quot;)</code></pre>
 </div>
-<div id="rmsle-metric-scores-in-kaggle" class="section level3">
-<h3>RMSLE metric scores in Kaggle</h3>
+<div id="rmsle-metric-scores-on-kaggle" class="section level3">
+<h3>RMSLE metric scores on Kaggle</h3>
 <div id="complete-train-dataset" class="section level4">
 <h4>Complete train dataset:</h4>
 <ul>
-<li><p>Public Score: 0.45800;</p></li>
-<li><p>Private Score: 0.47638;<br />
-</p></li>
+<li>Public Score: 0.45756</li>
+<li>Private Score: 0.47608</li>
 </ul>
-</div>
-<div id="sample-train-dataset" class="section level4">
-<h4>Sample train dataset:</h4>
-<p>The sample train dataset is a subset with 1kk random rows (seed=123) from complete train dataset.</p>
-<ul>
-<li><p>Public Score: 0.60876;</p></li>
-<li><p>Private Score: 0.61828;</p></li>
-</ul>
+<p>More details (set.seed = 12345):</p>
+<pre class="r"><code>featuresXGboostAndKaggle &lt;- fread(&quot;featuresXGboostAndKaggle.csv&quot;)
+featuresXGboostAndKaggle</code></pre>
+<pre><code>##    maxDepth nRounds     rmsle KagglePublicScore KagglePrivateScore TheBestModel
+## 1:       13      86 0.1875541           0.47611            0.45760           No
+## 2:       13      87 0.1875541           0.47608            0.45756          Yes
+## 3:       14      86 0.1767109           0.47684            0.45836           No
+## 4:       14      87 0.1766402           0.47685            0.45836           No</code></pre>
 <p><br />
 </p>
 </div>

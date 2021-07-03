@@ -1,0 +1,5 @@
+maxDepth,nRounds,rmsle,KagglePublicScore,KagglePrivateScore,TheBestModel
+13,86,0.18755411,0.47611,0.4576,No
+13,87,0.18755406,0.47608,0.45756,Yes
+14,86,0.17671092,0.47684,0.45836,No
+14,87,0.17664023,0.47685,0.45836,No

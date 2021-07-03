@@ -1,191 +1,17 @@
-<<<<<<< HEAD
-setwd("~/Development/DataScienceAcademy/FCD/BigDataRAzure/ProjetoFinal/Grupo-Bimbo-Inventory-Demand/EDA")
-getwd()
-
-## Libraries
-library(data.table)
-library(dplyr)
-library(caTools)
-library(caret)
-library(rpart)
-library(caret)
-library(ROCR,pROC,PRROC)
-library(pROC)
-library(PRROC)
-library(xgboost)
-
-##### Stage 0 - Loading Dataset
-train_orig <- fread(file.choose(), header=T) #train <- fread("Datasets/train.csv", header=T)
-gc()
-## Creating a random sample
-set.seed(123);
-train_sample =  train_orig[sample(nrow(train_orig), size=1000000), ]
-rm(train_orig)
-dim(train_sample)
-
-##### Stage 1 - Feature engineering
-df <- train_sample %>%
-  group_by(Semana, Agencia_ID, Canal_ID, Ruta_SAK, Cliente_ID, Producto_ID, Demanda_uni_equil) %>%
-  summarise(WeekSales_unit = sum(Venta_uni_hoy),
-            WeekSales_Pesos = sum(Venta_hoy),
-            ReturnNextWeek_unit = sum(Dev_uni_proxima),
-            ReturnNextWeek_Pesos = sum(Dev_proxima)) %>%
-  mutate(Avg_Venda = WeekSales_Pesos / WeekSales_unit,
-         Taxa_Ret = ReturnNextWeek_unit / (WeekSales_unit+ReturnNextWeek_unit)) %>%
-  filter(!is.nan(Avg_Venda))
-dim(df)
-# 4085 rows are deleted because they have Avg_Venda == 0, remaining 995915
-
-# as we saw in the correlation analysis at EDA, the "WeekSales_unit" variable will overfit the model; so let's delete it
-df$WeekSales_unit <- NULL
-
-# as we also saw in EAD that at the Demanda_uni_equil column, 96% of the data have 26 as mean;
-# so let's exclude Demanda_uni_equil bigger than 26
-df <- df[-which(df$Demanda_uni_equil > 26),]
-dim(df) # 42107 rows were removed
-
-# converting columns that are factor
-df$Semana <- as.factor(df$Semana)
-df$Canal_ID <- as.factor(df$Canal_ID)
-glimpse(df)
-
-# normalize function
-scale.features <- function(df, variables){
-  for (variable in variables){
-    df[[variable]] <- scale(df[[variable]], center=T, scale=T)
-  }
-  return(df)
-}
-?scale
-# variables that will be normalized
-numeric.vars <- c('Demanda_uni_equil','WeekSales_Pesos','ReturnNextWeek_unit',
-                  'ReturnNextWeek_Pesos','Avg_Venda','Taxa_Ret')
-df <- scale.features(df, numeric.vars)
-# str(df, max.level=2)
-glimpse(df)
-# see the first 5 rows from variables normalized
-head(df[, 7:12], 5)
-
-# Removing functions
-rm('scale.features')
-rm('numeric.vars')
-
-
-##### Stage 2: Splitting into train and test datasets
-set.seed(123)
-sample = sample.split(df$Demanda_uni_equil, SplitRatio = .75)
-train = subset(df, sample == TRUE)
-test  = subset(df, sample == FALSE)
-# dim(train)
-# dim(test)
-gc()
-
-
-##### Stage 3: Creating the Models
-### Model 1: Linear Regression 
-controlModel <- trainControl(method="cv", number=5)
-set.seed(12345)
-model_LR <- train(Demanda_uni_equil ~ ., data = train, 
-                  method = "lm", metric="RMSE", 
-                  trControl=controlModel)
-summary(model_LR)
-pred_LR <- predict(model_LR, test)
-rmse_LR <- RMSE(pred_LR, test$Demanda_uni_equil)
-r2_LR <- R2(pred_LR, test$Demanda_uni_equil)
-scores_LR <- data.frame(actual = test$Demanda_uni_equil,prediction = pred_LR)
-
-### Model 2: Decision Tree (rpart-anova)
-set.seed(12345)
-model_anova <- rpart(Demanda_uni_equil ~ ., train, method = 'anova')
-pred_anova <- predict(model_anova, test)
-rmse_anova <- RMSE(pred_anova, test$Demanda_uni_equil)
-r2_anova <- R2(pred_anova, test$Demanda_uni_equil)
-scores_anova <- data.frame(actual = test$Demanda_uni_equil,prediction = pred_anova)
-
-# Model 3: eXtreme Gradient Boosting (XGBoost)
-xgb_train <- xgb.DMatrix(data = data.matrix(select(train, -Demanda_uni_equil)),
-                         label = train$Demanda_uni_equil)
-xgb_test <- xgb.DMatrix(data = data.matrix(select(test, -Demanda_uni_equil)),
-                        label = test$Demanda_uni_equil)
-set.seed(12345)
-model_XGB <- xgboost(data=xgb_train, max.depth=3, nrounds=100)
-pred_XGB <- predict(model_XGB, xgb_test)
-rmse_XGB <- RMSE(pred_XGB, test$Demanda_uni_equil)
-r2_XGB <- R2(pred_XGB, test$Demanda_uni_equil)
-scores_XGB <- data.frame(actual = test$Demanda_uni_equil,prediction = pred_XGB)
-
-# ### Model X: Random Forest 
-# set.seed(12345)
-# model_RF <- train(Demanda_uni_equil ~ ., data = train, 
-#                     method = "rf", metric="RMSE")
-# pred_RF <- predict(model_RF, test)
-# rmse_RF <- RMSE(pred_RF, test$Demanda_uni_equil)
-# r2_RF <- R2(pred_RF, test$Demanda_uni_equil)
-# # Memory insuficient to execute this model
-
-###### Comparing the Models
-## graph models LM
-ggplotRegression <- function (fit, color, tittle_, rmse_) {
-
-  ggplot(fit$model, aes_string(x = names(fit$model)[2], y = names(fit$model)[1])) + 
-    geom_point() +
-    stat_smooth(method = "lm", col = color) +
-    labs(title = paste(tittle_),
-         subtitle =paste(
-                       "Adj R2 = ",signif(summary(fit)$adj.r.squared, 4),
-                       " Intercept=",signif(fit$coef[[1]],4 ),
-                       " Slope=",signif(fit$coef[[2]], 4),
-                       " RMSE=",signif(rmse_, 4)))+
-    theme_bw()
-}
-
-fit_LR <- lm(prediction ~ actual, data = scores_LR)
-fit_anova <- lm(prediction ~ actual, data = scores_anova)
-fit_XGB <- lm(prediction ~ actual, data = scores_XGB)
-ggplotRegression(fit_LR, 5, "Linear Regression Model: ", rmse_LR)
-ggplotRegression(fit_anova, 6, "Decision Tree (anova): ", rmse_anova)
-ggplotRegression(fit_XGB, 7, "XGBoost: ", rmse_XGB)
-
-## Comparison of R² and RMSE 
-summaryModels <- data.frame(Model = c('Linear Regression','Rpart(anova)','XGBoost'),
-                     RMSE = c(rmse_LR,rmse_anova,rmse_XGB),
-                     R2 = c(r2_LR, r2_anova, r2_XGB))
-
-ggplot(summaryModels) +
-  geom_bar(stat = 'identity', fill = '#8CD17D') +
-  aes(x = Model, y = R2) +
-  geom_text(aes(Model, R2, label = round(R2,4), fill = NULL,  vjust = 1.3)) +
-  ggtitle("Comparison of the R² of each model")+
-  theme_bw()
-
-ggplot(summaryModels) +
-  geom_bar(stat = 'identity', fill = '#E15759') +
-  aes(x = Model, y = RMSE) +
-  geom_text(aes(Model, RMSE, label = round(RMSE,6), fill = NULL,  vjust = 1.3)) +
-  ggtitle("Comparison of the RMSE of each model") +
-  theme_bw()
-
-# so, the best Model was XGBoost
-=======
 setwd("~/Development/DataScienceAcademy/FCD/BigDataRAzure/ProjetoFinal/Grupo-Bimbo-Inventory-Demand/Modelling_and_Evaluation")
 getwd()
 
-# gc() function - is used for free ram memory. In the code below there are many strategic rows for this purpose;
-
 ## Libraries
 library(data.table)
 library(dplyr)
 library(caret)
 library(xgboost)
+library(Metrics) #rmsle function
 
 # 1. Loading Dataset
 # 1.1 Loading 'train' dataset:
 train <- fread("../Datasets/train.csv", header=T)
 #train <- fread("../Datasets/train_sample.csv", header=T)
-# # Sets a seed to allow the same experiment result to be reproducible:
-# set.seed(123);
-# # as the dataset is very large, let's get a random sample of it
-# train =  train[sample(nrow(train), size=1000000), ]
 
 # 1.2 Loading 'test' dataset:
 test <- fread("/home/matheus/Development/DataScienceAcademy/FCD/BigDataRAzure/ProjetoFinal/Projeto2/Datasets/test.csv", header=T)
@@ -258,6 +84,7 @@ demand_mean_PC <- train %>%
   group_by(Producto_ID, Cliente_ID) %>%
   summarise_at(vars(Demanda_uni_equil),
                list(Mean_byPC = mean))
+gc()
 data <- merge(x=data,y=demand_mean_PC,by=c("Producto_ID","Cliente_ID"), all.x = TRUE)
 gc()
 
@@ -313,26 +140,107 @@ test <- data %>%
   filter(toTest == 1) %>%
   select(-c(Demanda_uni_equil, toTest))
 
-# 
-rm(data)
+# removing no longer needed variables:
+rm(data, params)
+
 gc()
 
 ## 2.7 Creating XGboost Model
-#We chose XGboost algorithm to create our predictive model because it has a good performance to generate the scores of the evaluation metric to be used and because it is considerably faster when compared to other algorithms.
+# We chose XGboost algorithm to create our predictive model because it has a good performance to generate the scores of the evaluation metric to be used and because it is considerably faster when compared to other algorithms.
 # The XGboost algorithm has the ability to handle NA values and so we will not transform the data to handle these apparitions.
+
+# Function to find the best parameters for XGboost algorithm. It generates various models and compares them.
+getBetterXGboostParameters <- function(data, label, maxDepth = 10, nRounds = 100) {
+  
+  # Creating a dataframe to save model results.
+  featuresXGboost <- data.frame()
+  
+  # auxiliary variable to monitoring the progress in the evaluation of the created models.
+  count <- 0
+  
+  # it defines the total number of models to be created.
+  total <- length(maxDepth) * length(nRounds)
+  
+  # Converting dataset variable data to DMatrix type (a dense matrix).
+  dTrain <- xgb.DMatrix(
+    data  = data,      # predictor variables
+    label = label      # variable to be predicted.
+  )
+  
+  # Specify the learning task and the corresponding learning objective (regression with squared log loss):
+  obj = "reg:squaredlogerror"
+  
+  for(m in maxDepth) {
+    for(r in nRounds) {
+      # Sets a seed to allow the same experiment result to be reproducible:
+      set.seed(12345)
+      
+      # Creating the model based on the XGboost algorithm:
+      model_xgb <- xgb.train(
+        data      = dTrain,   # defines the predictor variables and the variable to be predicted.
+        objective = obj,      # regression with squared log loss as learning task
+        max.depth = m,        # it defines the maximum size of the tree.
+        nrounds   = r,        # it controls the maximum number of iterations.
+      )
+      
+      # Performing prediction with the model based on the XGboost algorithm:
+      pred <- predict(model_xgb, data)
+      pred[pred < 0] <- 0
+      
+      # It stores in a dataframe the parameters used to create the models and their RMSLE metric score obtained:
+      featuresXGboost <- rbind(featuresXGboost, data.frame(
+        maxDepth = m, 
+        nRounds  = r,
+        rmsle    = rmsle(label, pred))
+      )
+      
+      # Increases the number of evaluated models.
+      count <- count + 1 
+      
+      # Print the results during evaluation
+      print(paste(100 * count / total, '%, best rmsle: ', min(featuresXGboost$rmsle)))
+    }
+  }
+  # Returns the dataframe with the results obtained from each model
+  featuresXGboost
+} # End getBetterXGboostParameters Function
+
+# Generating different models based on the XGboost algorithm and determining their scores for each RMSLE metric.
+featuresXGboost <- getBetterXGboostParameters(
+  data        = as.matrix(data %>% select(- Demanda_uni_equil)), 
+  label       = data$Demanda_uni_equil, 
+  maxDepth    = 13:14, 
+  nRounds     = 86:87
+)
+
+# It returns the dataframe with the results obtained from each model:
+featuresXGboost
+
+# The best model in this case is:
+featuresXGboost[which.min(featuresXGboost$rmsle), ] #head(sort(featuresXGboost$rmsle, decreasing = F), 1)
+# so, it seems that the best model is in the 4th row;
+
+# However, after using each of the above settings on kaggle, it was observed that the best result is in 2nd row.
+featuresXGboost[2, ]
+# Therefore, the best model is the 2nd, since models registered after this row show lower performances because they begin overfitting.
+bestXGboost <- featuresXGboost[2, ]
 
 # Converting the data for  DMatrix type (a dense matrix):
 xgb_train <- xgb.DMatrix(data = data.matrix(select(train, -Demanda_uni_equil)), # predictor variables.
                          label = train$Demanda_uni_equil)                       # variable to be predicted.
-
 # Sets a seed to allow the same experiment result to be reproducible:
 set.seed(12345)
 
 # Creating the model based on the XGboost algorithm:
-model_XGB <- xgboost(data=xgb_train, max.depth=15, nrounds=50)
-# Performing prediction with the model based on the XGboost algorithm:
-pred <- predict(model_XGB, as.matrix(test %>% select(- id)))
+model_xgb <- xgboost(
+  data      = xgb_train,   # defines the predictor variables and the variable to be predicted.
+  objective = "reg:squaredlogerror", # regression with squared log loss as learning task
+  max.depth = 13,        # it defines the maximum size of the tree.
+  nrounds   = 87,        # it controls the maximum number of iterations.
+)
 
+# Performing prediction with the model based on the XGboost algorithm:
+pred <- predict(model_xgb, as.matrix(test %>% select(- id)))
 
 # Converting the predicted results to the original scale of the target variable (exp(Demand_uni_equil) - 1):
 pred <- expm1(pred)
@@ -340,14 +248,8 @@ pred <- expm1(pred)
 # Turning any negative prediction into a null value:
 pred[pred < 0] <- 0
 
-
 # Saving the generated results to a CSV file:
 d <- data.frame(id = as.integer(test$id), Demanda_uni_equil = pred)
-fwrite(d, "complete_train_submit.csv")
+fwrite(d, "html_dfComplete.csv")
 
 gc()
-
-## Kaggle result: 
-# - Public Score: 0.45800;
-# - Private Score: 0.47638;
->>>>>>> 10th commit: Adjusts made; adding code 1.0 in html
